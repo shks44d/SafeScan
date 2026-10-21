@@ -79,7 +79,7 @@ class ApiTests(unittest.TestCase):
         self.assertIn(b"Scan public TCP ports", page.data)
         self.assertIn(b"All ports (1\xe2\x80\x9365,535)", page.data)
         self.assertEqual(favicon.status_code, 200)
-        self.assertEqual(favicon.mimetype, "image/svg+xml")
+        self.assertEqual(favicon.mimetype, "image/png")
         favicon.close()
 
     def test_json_only_enforcement(self):

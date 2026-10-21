@@ -90,9 +90,9 @@ def favicon():
     """Serve the brand icon from the conventional crawler-friendly path."""
     return send_from_directory(
         app.static_folder,
-        "brand/favicon.svg",
-        mimetype="image/svg+xml",
-        max_age=86_400,
+        "brand/favicon-v2.png",
+        mimetype="image/png",
+        max_age=0,
     )
 
 

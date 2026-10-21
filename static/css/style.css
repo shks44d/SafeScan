@@ -45,7 +45,7 @@ button { color: inherit; }
   font-weight: 750;
   letter-spacing: -.03em;
 }
-.brand img { width: 42px; height: 48px; }
+.brand img { width: 42px; height: 42px; object-fit: contain; }
 main, footer { width: min(var(--content), calc(100% - 48px)); margin-inline: auto; }
 .intro { padding: 38px 0 24px; }
 .intro h1 {
@@ -171,7 +171,7 @@ footer { border-top: 1px solid var(--line); padding: 20px 0 28px; color: #8396b0
 @media (max-width: 760px) {
   .site-header { height: 70px; padding-inline: 18px; }
   .brand { font-size: 23px; }
-  .brand img { width: 34px; height: 39px; }
+  .brand img { width: 34px; height: 34px; }
   main, footer { width: min(100% - 32px, var(--content)); }
   .intro { padding-top: 34px; }
   .intro h1 { font-size: 39px; }
