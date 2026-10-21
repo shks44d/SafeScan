@@ -9,7 +9,7 @@ import time
 from collections import defaultdict, deque
 from typing import Any
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_from_directory
 
 from scanner.port_scanner import scan_ports
 from utils.netguard import normalize_target, require_public_ip, resolve_public_target
@@ -83,6 +83,17 @@ def security_headers(response):
 def index():
     """Render the scanner interface."""
     return render_template("index.html")
+
+
+@app.get("/favicon.ico")
+def favicon():
+    """Serve the brand icon from the conventional crawler-friendly path."""
+    return send_from_directory(
+        app.static_folder,
+        "brand/favicon.svg",
+        mimetype="image/svg+xml",
+        max_age=86_400,
+    )
 
 
 @app.post("/api/resolve")

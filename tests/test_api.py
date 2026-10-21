@@ -75,8 +75,12 @@ class ApiTests(unittest.TestCase):
     def test_health_and_page(self):
         self.assertEqual(self.client.get("/health").json, {"status": "ok"})
         page = self.client.get("/")
+        favicon = self.client.get("/favicon.ico")
         self.assertIn(b"Scan public TCP ports", page.data)
         self.assertIn(b"All ports (1\xe2\x80\x9365,535)", page.data)
+        self.assertEqual(favicon.status_code, 200)
+        self.assertEqual(favicon.mimetype, "image/svg+xml")
+        favicon.close()
 
     def test_json_only_enforcement(self):
         response = self.client.post("/api/resolve", data="target=example.com")
