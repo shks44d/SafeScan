@@ -70,6 +70,7 @@ class ApiTests(unittest.TestCase):
     def setUp(self):
         application.app.testing = True
         application._rate_events.clear()
+        application._port_events.clear()
         self.client = application.app.test_client()
 
     def test_health_and_page(self):
@@ -155,6 +156,59 @@ class ApiTests(unittest.TestCase):
             response = self.client.post("/api/resolve", json={"target": "three.example"})
         self.assertEqual(response.status_code, 429)
         self.assertIn("Too many", response.json["error"])
+
+    def test_busy_response_is_retryable(self):
+        with patch("app.scan_ports", side_effect=application.ScanCapacityError):
+            response = self.client.post(
+                "/api/scan",
+                json={
+                    "ip": "127.0.0.1",
+                    "host": "localhost",
+                    "start": 1,
+                    "end": 250,
+                    "authorized": True,
+                },
+            )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.headers["Retry-After"], "2")
+        self.assertEqual(len(application._port_events), 0)
+
+    def test_port_budget_allows_full_scan_and_blocks_excess_work(self):
+        with patch("scanner.port_scanner.scan_port", return_value=None), patch.object(
+            application, "RATE_LIMIT_PORTS", 65_535
+        ):
+            for start in range(1, 65_536, 250):
+                response = self.client.post(
+                    "/api/scan",
+                    json={
+                        "ip": "127.0.0.1",
+                        "host": "localhost",
+                        "start": start,
+                        "end": min(start + 249, 65_535),
+                        "authorized": True,
+                    },
+                )
+                self.assertEqual(response.status_code, 200)
+            response = self.client.post(
+                "/api/scan",
+                json={
+                    "ip": "127.0.0.1",
+                    "host": "localhost",
+                    "start": 1,
+                    "end": 2000,
+                    "authorized": True,
+                },
+            )
+            self.assertEqual(response.status_code, 429)
+
+    def test_port_budget_expires_and_counts_larger_requests(self):
+        with patch.object(application, "RATE_LIMIT_PORTS", 2000), patch(
+            "app.time.monotonic", return_value=100
+        ):
+            self.assertTrue(application.within_port_budget("client", 2000))
+            self.assertFalse(application.within_port_budget("client", 1))
+        with patch("app.time.monotonic", return_value=161):
+            self.assertTrue(application.within_port_budget("client", 1))
 
 
 if __name__ == "__main__":

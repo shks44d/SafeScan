@@ -1,6 +1,6 @@
-const CHUNK_SIZE = 1000;
+const CHUNK_SIZE = 250;
 const PARALLEL_CHUNKS = 3;
-const CHUNK_RETRIES = 3;
+const CHUNK_RETRIES = 6;
 const RETRY_BASE_DELAY_MS = 600;
 const COMMON_RANGES = [
   [20, 25], [53, 53], [67, 69], [80, 81], [88, 88], [110, 111], [123, 123],
@@ -265,12 +265,20 @@ document.querySelector('#download-json').addEventListener('click', () => {
 });
 
 document.querySelector('#download-csv').addEventListener('click', () => {
-  const quote = value => `"${String(value ?? '').replaceAll('"', '""')}"`;
   const rows = [['Port', 'State', 'Service', 'Product', 'Version', 'Confidence', 'Banner'],
     ...resultData.open.map(item => [item.port, item.state, item.service, item.product, item.version,
       item.confidence, item.banner])];
-  download('safescan-results.csv', 'text/csv', rows.map(row => row.map(quote).join(',')).join('\n'));
+  download('safescan-results.csv', 'text/csv', rows.map(row => row.map(csvCell).join(',')).join('\n'));
 });
+
+function csvCell(value) {
+  let text = String(value ?? '');
+  // Quoting alone does not stop spreadsheet formula evaluation. Check through
+  // leading whitespace/control characters before escaping the CSV syntax.
+  const candidate = text.replace(/^[\s\u0000-\u001f\u007f-\u009f]+/u, '');
+  if (/^[=+\-@＝＋－＠]/u.test(candidate)) text = `'${text}`;
+  return `"${text.replaceAll('"', '""')}"`;
+}
 
 document.querySelector('#copy-results').addEventListener('click', async event => {
   await navigator.clipboard.writeText(JSON.stringify(resultData, null, 2));

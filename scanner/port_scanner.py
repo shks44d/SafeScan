@@ -6,11 +6,19 @@ import os
 import re
 import socket
 import ssl
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 
-# Vercel's Python runtime cannot reliably create 400 native threads. At 160
-# workers, a 1,000-port chunk still completes within the function time budget.
+# Share a single native-thread budget; browser chunks are small enough for
+# three overlapping requests to fit the serverless function time budget.
 SCAN_THREADS = int(os.getenv("SAFESCAN_SCAN_THREADS", "160"))
+MAX_ACTIVE_CHUNKS = int(os.getenv("SAFESCAN_MAX_ACTIVE_CHUNKS", "3"))
+if SCAN_THREADS < 1 or MAX_ACTIVE_CHUNKS < 1:
+    raise ValueError("Scan worker and active-chunk limits must be positive.")
+_scan_slots = threading.BoundedSemaphore(MAX_ACTIVE_CHUNKS)
+_pool_lock = threading.Lock()
+_shared_pool: ThreadPoolExecutor | None = None
 CONNECT_TIMEOUT = float(os.getenv("SAFESCAN_CONNECT_TIMEOUT", "0.8"))
 BANNER_TIMEOUT = float(os.getenv("SAFESCAN_BANNER_TIMEOUT", "1.0"))
 BANNER_LIMIT = 200
@@ -230,14 +238,66 @@ def scan_port(ip: str, host: str, port: int) -> dict[str, object] | None:
         sock.close()
 
 
-def scan_ports(ip: str, host: str, start: int, end: int) -> list[dict[str, object]]:
-    """Connect-scan an inclusive range using a bounded thread pool."""
-    workers = min(SCAN_THREADS, end - start + 1)
+class ScanCapacityError(Exception):
+    """The instance has no room for another scan chunk."""
+
+
+class ScanQuotaError(Exception):
+    """The caller has exhausted its port-work allowance."""
+
+
+def _executor() -> ThreadPoolExecutor:
+    """Lazily create one worker budget shared by every request in this process."""
+    global _shared_pool
+    with _pool_lock:
+        if _shared_pool is None:
+            _shared_pool = ThreadPoolExecutor(
+                max_workers=SCAN_THREADS, thread_name_prefix="tcp-scan"
+            )
+        return _shared_pool
+
+
+def _retire_executor(executor: ThreadPoolExecutor) -> None:
+    """Drain even tasks hidden by a submit failure before permitting a new pool."""
+    global _shared_pool
+    with _pool_lock:
+        # submit() enqueues before starting a thread. A failed Thread.start can
+        # leave work without returning its Future, so drain the entire old pool.
+        executor.shutdown(wait=True, cancel_futures=True)
+        if _shared_pool is executor:
+            _shared_pool = None
+
+
+def scan_ports(
+    ip: str, host: str, start: int, end: int, work_allowed: Callable[[], bool] | None = None
+) -> list[dict[str, object]]:
+    """Scan a chunk within the process-wide active-chunk and worker budgets."""
+    if not 1 <= start <= end <= 65_535 or end - start + 1 > 2_000:
+        raise ValueError("Invalid scan chunk range.")
+    if not _scan_slots.acquire(blocking=False):
+        raise ScanCapacityError("Scanner is busy. Please retry shortly.")
+    futures = []
     results: list[dict[str, object]] = []
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tcp-scan") as executor:
-        futures = [executor.submit(scan_port, ip, host, port) for port in range(start, end + 1)]
+    try:
+        if work_allowed is not None and not work_allowed():
+            raise ScanQuotaError("Scan allowance reached. Please wait a minute and try again.")
+        executor = _executor()
+        for port in range(start, end + 1):
+            try:
+                future = executor.submit(scan_port, ip, host, port)
+            except (RuntimeError, MemoryError):
+                _retire_executor(executor)
+                raise
+            futures.append(future)
         for future in as_completed(futures):
             service = future.result()
             if service:
                 results.append(service)
+    finally:
+        # Keep the admission slot until all submitted work has finished, including
+        # partial submission failures. Otherwise errors could bypass the budget.
+        for future in futures:
+            future.cancel()
+        wait([future for future in futures if not future.cancelled()])
+        _scan_slots.release()
     return sorted(results, key=lambda item: int(item["port"]))

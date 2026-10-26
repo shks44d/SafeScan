@@ -11,10 +11,11 @@ from typing import Any
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
-from scanner.port_scanner import scan_ports
+from scanner.port_scanner import ScanCapacityError, ScanQuotaError, scan_ports
 from utils.netguard import normalize_target, require_public_ip, resolve_public_target
 
-RATE_LIMIT_REQUESTS = int(os.getenv("SAFESCAN_RATE_LIMIT_REQUESTS", "150"))
+RATE_LIMIT_REQUESTS = int(os.getenv("SAFESCAN_RATE_LIMIT_REQUESTS", "600"))
+RATE_LIMIT_PORTS = int(os.getenv("SAFESCAN_RATE_LIMIT_PORTS", "80000"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("SAFESCAN_RATE_LIMIT_WINDOW", "60"))
 MAX_CHUNK_PORTS = 2_000
 
@@ -24,6 +25,20 @@ logger = logging.getLogger("safescan")
 
 _rate_events: dict[str, deque[float]] = defaultdict(deque)
 _rate_lock = threading.Lock()
+_port_events: dict[str, deque[tuple[float, int]]] = defaultdict(deque)
+
+
+def within_port_budget(address: str, ports: int) -> bool:
+    """Charge scan work by ports, so smaller chunks do not expand the allowance."""
+    now = time.monotonic()
+    with _rate_lock:
+        events = _port_events[address]
+        while events and events[0][0] <= now - RATE_LIMIT_WINDOW_SECONDS:
+            events.popleft()
+        if sum(count for _, count in events) + ports > RATE_LIMIT_PORTS:
+            return False
+        events.append((now, ports))
+        return True
 
 
 def json_error(message: str, status: int) -> tuple[Any, int]:
@@ -135,7 +150,20 @@ def scan_chunk():
     if end - start + 1 > MAX_CHUNK_PORTS:
         return json_error("A scan request can contain at most 2,000 ports.", 400)
     try:
-        services = scan_ports(ip=ip, host=host, start=start, end=end)
+        address = client_ip()
+        services = scan_ports(
+            ip=ip,
+            host=host,
+            start=start,
+            end=end,
+            work_allowed=lambda: within_port_budget(address, end - start + 1),
+        )
+    except ScanQuotaError as exc:
+        return json_error(str(exc), 429)
+    except ScanCapacityError:
+        response = jsonify({"error": "Scanner is busy. Retrying shortly."})
+        response.headers["Retry-After"] = "2"
+        return response, 503
     except Exception:
         logger.exception("Port scan chunk failed for client %s", client_ip())
         return json_error("The scan chunk could not be completed.", 500)

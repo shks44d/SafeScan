@@ -3,6 +3,7 @@
 import socket
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from scanner import port_scanner
@@ -39,31 +40,83 @@ class LocalServer:
 
 class ScannerTests(unittest.TestCase):
     def test_scan_uses_serverless_safe_worker_limit(self):
-        created_workers = []
+        release = threading.Event()
+        entered = threading.Barrier(5)
+        charged = []
 
-        class RecordingExecutor:
-            def __init__(self, max_workers, thread_name_prefix):
-                created_workers.append(max_workers)
+        def blocked_port(*_args):
+            entered.wait(timeout=5)
+            release.wait(timeout=5)
 
-            def __enter__(self):
-                return self
+        with patch.object(port_scanner, "_shared_pool", None), patch.object(
+            port_scanner, "SCAN_THREADS", 4
+        ), patch.object(port_scanner, "_scan_slots", threading.BoundedSemaphore(2)), patch.object(
+            port_scanner, "scan_port", side_effect=blocked_port
+        ), patch.object(
+            port_scanner, "ThreadPoolExecutor", wraps=ThreadPoolExecutor
+        ) as factory:
+            with ThreadPoolExecutor(max_workers=2) as callers:
+                first = callers.submit(port_scanner.scan_ports, "127.0.0.1", "localhost", 1, 2)
+                second = callers.submit(port_scanner.scan_ports, "127.0.0.1", "localhost", 3, 4)
+                try:
+                    entered.wait(timeout=5)
+                    with self.assertRaises(port_scanner.ScanCapacityError):
+                        port_scanner.scan_ports(
+                            "127.0.0.1",
+                            "localhost",
+                            5,
+                            6,
+                            work_allowed=lambda: charged.append(True) or True,
+                        )
+                    factory.assert_called_once_with(max_workers=4, thread_name_prefix="tcp-scan")
+                    self.assertEqual(charged, [])
+                finally:
+                    release.set()
+                self.assertEqual(first.result(timeout=5), [])
+                self.assertEqual(second.result(timeout=5), [])
+            port_scanner._shared_pool.shutdown()
 
-            def __exit__(self, *_args):
-                return None
+    def test_capacity_released_after_quota_rejection_and_scan_failure(self):
+        with patch.object(port_scanner, "_scan_slots", threading.BoundedSemaphore(1)), patch.object(
+            port_scanner, "scan_port", side_effect=RuntimeError("test failure")
+        ):
+            with self.assertRaises(port_scanner.ScanQuotaError):
+                port_scanner.scan_ports("127.0.0.1", "localhost", 1, 1, lambda: False)
+            with self.assertRaises(RuntimeError):
+                port_scanner.scan_ports("127.0.0.1", "localhost", 1, 1)
+            with patch.object(port_scanner, "scan_port", return_value=None):
+                self.assertEqual(port_scanner.scan_ports("127.0.0.1", "localhost", 1, 1), [])
 
-            def submit(self, function, *args):
-                class CompletedFuture:
-                    def result(self):
-                        return function(*args)
+    def test_capacity_released_after_executor_creation_failure(self):
+        with patch.object(port_scanner, "_scan_slots", threading.BoundedSemaphore(1)), patch.object(
+            port_scanner, "_executor", side_effect=RuntimeError("unavailable")
+        ):
+            for _ in range(2):
+                with self.assertRaisesRegex(RuntimeError, "unavailable"):
+                    port_scanner.scan_ports("127.0.0.1", "localhost", 1, 1)
 
-                return CompletedFuture()
+    def test_thread_start_failure_drains_hidden_submitted_work(self):
+        pools = []
 
-        with patch.object(port_scanner, "ThreadPoolExecutor", RecordingExecutor), patch.object(
-            port_scanner, "as_completed", side_effect=lambda futures: futures
-        ), patch.object(port_scanner, "scan_port", return_value=None):
-            port_scanner.scan_ports("127.0.0.1", "localhost", 1, 1000)
+        def create_pool(**kwargs):
+            pool = ThreadPoolExecutor(**kwargs)
+            pools.append(pool)
+            return pool
 
-        self.assertEqual(created_workers, [160])
+        with patch.object(port_scanner, "_shared_pool", None), patch.object(
+            port_scanner, "_scan_slots", threading.BoundedSemaphore(1)
+        ), patch.object(port_scanner, "ThreadPoolExecutor", side_effect=create_pool), patch.object(
+            threading.Thread, "start", side_effect=RuntimeError("cannot start new thread")
+        ), patch.object(
+            port_scanner, "scan_port"
+        ) as probe:
+            for _ in range(5):
+                with self.assertRaisesRegex(RuntimeError, "cannot start new thread"):
+                    port_scanner.scan_ports("127.0.0.1", "localhost", 1, 1)
+                self.assertIsNone(port_scanner._shared_pool)
+            probe.assert_not_called()
+            # Shutdown's sentinel is the only queue entry; hidden work was drained.
+            self.assertTrue(all(pool._work_queue.qsize() == 1 for pool in pools))
 
     def test_ssh_banner_and_closed_port(self):
         server = LocalServer(b"SSH-2.0-OpenSSH_9.6\r\n").start()
