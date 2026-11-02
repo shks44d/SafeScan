@@ -133,34 +133,54 @@ def identify_service(
     port: int, banner: str, mysql_version: str | None = None
 ) -> dict[str, str | None]:
     """Prefer observed protocol evidence, then fall back to a port guess."""
+    banner = banner[:4096]
     lowered = banner.lower()
     service: str | None = None
     product: str | None = None
     version: str | None = None
     if mysql_version:
-        service, product, version = "mysql", "MySQL/MariaDB", mysql_version
+        version = sanitize_banner(mysql_version)
+        if "mariadb" in version.lower():
+            product = "MariaDB"
+            version = re.sub(r"^5\.5\.5-", "", version)
+        else:
+            product = "MySQL"
+        service = "mysql"
     elif banner.startswith("SSH-"):
         service = "ssh"
-    elif banner.startswith("HTTP/") or " server:" in f" {lowered}":
+    elif banner.startswith("HTTP/"):
         service = "https" if port in TLS_HTTP_PORTS else "http"
     elif banner.startswith("220"):
-        service = "smtp" if port in {25, 465, 587} else "ftp"
-    elif banner.startswith("+OK"):
+        if re.search(r"\b(?:smtp|esmtp|postfix|exim)\b", lowered):
+            service = "smtp"
+        elif re.search(r"\b(?:ftp|vsftpd|proftpd|filezilla)\b", lowered):
+            service = "ftp"
+        else:
+            service = None
+    elif banner.startswith("+OK") and (
+        port in {110, 995} or "pop3" in lowered or "dovecot" in lowered
+    ):
         service = "pop3"
     elif re.match(r"^\*\s+(OK|PREAUTH)", banner, re.IGNORECASE):
         service = "imap"
-    elif banner.startswith("+PONG") or "noauth" in lowered:
+    elif banner.startswith("+PONG") or re.match(r"^-NOAUTH\b", banner, re.IGNORECASE):
         service, product = "redis", "Redis"
 
+    product_source = banner
+    if service in {"http", "https"}:
+        header = re.search(r"^Server:[ \t]*([^\r\n]+)", banner, re.IGNORECASE | re.MULTILINE)
+        product_source = header.group(1) if header else ""
     for pattern, detected_product, detected_service in PRODUCT_PATTERNS:
-        match = pattern.search(banner)
+        if mysql_version:
+            break
+        match = pattern.search(product_source)
         if match:
             product = detected_product
             service = service or detected_service
             version = match.group(1) if match.lastindex else version
             break
     if service in {"http", "https"}:
-        server = re.search(r"(?:^|\s)Server:\s*([^\r\n]+)", banner, re.IGNORECASE)
+        server = re.search(r"^Server:[ \t]*([^\r\n]+)", banner, re.IGNORECASE | re.MULTILINE)
         if server:
             value = server.group(1).strip()
             match = re.match(r"([^/\s]+)(?:/([^\s]+))?", value)
@@ -174,7 +194,12 @@ def identify_service(
             "version": None,
             "confidence": "port-guess",
         }
-    return {"service": service, "product": product, "version": version, "confidence": "banner"}
+    return {
+        "service": service,
+        "product": sanitize_banner(product) if product else None,
+        "version": sanitize_banner(version) if version else None,
+        "confidence": "banner",
+    }
 
 
 def _address(ip: str, port: int) -> tuple:
@@ -230,7 +255,9 @@ def scan_port(ip: str, host: str, port: int) -> dict[str, object] | None:
             return None
         data, mysql_version = _probe_open_socket(sock, host, port)
         banner = sanitize_banner(data)
-        identity = identify_service(port, banner, mysql_version)
+        # Identify from the bounded original response so HTTP header boundaries
+        # survive; normalize only the text presented to the browser afterward.
+        identity = identify_service(port, data.decode("utf-8", errors="replace"), mysql_version)
         return {"port": port, "state": "open", "banner": banner, **identity}
     except OSError:
         return None

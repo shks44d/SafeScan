@@ -18,6 +18,7 @@ RATE_LIMIT_REQUESTS = int(os.getenv("SAFESCAN_RATE_LIMIT_REQUESTS", "600"))
 RATE_LIMIT_PORTS = int(os.getenv("SAFESCAN_RATE_LIMIT_PORTS", "80000"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("SAFESCAN_RATE_LIMIT_WINDOW", "60"))
 MAX_CHUNK_PORTS = 2_000
+APP_VERSION = "2.0.0"
 
 app = Flask(__name__)
 app.config.update(MAX_CONTENT_LENGTH=16_384)
@@ -81,6 +82,7 @@ def security_headers(response):
     response.headers.update(
         {
             "X-Content-Type-Options": "nosniff",
+            "X-SafeScan-Version": APP_VERSION,
             "X-Frame-Options": "DENY",
             "Referrer-Policy": "no-referrer",
             "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
@@ -97,7 +99,7 @@ def security_headers(response):
 @app.get("/")
 def index():
     """Render the scanner interface."""
-    return render_template("index.html")
+    return render_template("index.html", app_version=APP_VERSION)
 
 
 @app.get("/favicon.ico")
@@ -122,7 +124,7 @@ def resolve_target():
     try:
         host = normalize_target(body.get("target"))
         ip, ips = resolve_public_target(host)
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         return json_error(str(exc), 400)
     return jsonify({"host": host, "ip": ip, "ips": ips})
 
@@ -140,8 +142,10 @@ def scan_chunk():
     try:
         ip = require_public_ip(body.get("ip"), allow_private=app.testing)
         host = normalize_target(body.get("host"))
-        start = int(body.get("start"))
-        end = int(body.get("end"))
+        start = body.get("start")
+        end = body.get("end")
+        if type(start) is not int or type(end) is not int:
+            raise ValueError("Start and end ports must be JSON integers.")
     except (TypeError, ValueError) as exc:
         message = str(exc) or "Start and end ports must be whole numbers."
         return json_error(message, 400)

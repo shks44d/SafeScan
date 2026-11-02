@@ -9,7 +9,7 @@
   <meta property="og:type" content="website">
   <meta name="theme-color" content="#08111d">
   <link rel="icon" href="{{ url_for('favicon', v=2) }}" type="image/png">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v=4) }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='2.0.0') }}">
   <title>SafeScan · Public TCP Port Scanner</title>
 </head>
 <body>
@@ -18,6 +18,7 @@
       <img src="{{ url_for('static', filename='brand/safescan-mark-v2.png') }}" alt="" width="42" height="42">
       <span>SafeScan</span>
     </a>
+    <span class="version-badge">v{{ app_version }}</span>
   </header>
 
   <main>
@@ -40,6 +41,7 @@
           <option value="well-known">Well-known (1–1,024)</option>
           <option value="all">All ports (1–65,535)</option>
           <option value="custom">Custom range</option>
+          <option value="list">Custom port list</option>
         </select>
       </div>
       <div id="custom-range" class="custom-range" hidden>
@@ -52,6 +54,11 @@
           <input id="end-port" name="end" type="number" min="1" max="65535" value="1024">
         </div>
         <small class="field-error range-error" id="range-error"></small>
+      </div>
+      <div id="list-field" class="field list-field" hidden>
+        <label for="port-list">Ports and ranges</label>
+        <input id="port-list" type="text" maxlength="10000" placeholder="22,80,443,8000-8100" aria-describedby="list-error">
+        <small id="list-error" class="field-error" role="alert"></small>
       </div>
       <label class="authorization">
         <input id="authorized" type="checkbox" required>
@@ -67,6 +74,7 @@
         <div class="status-actions">
           <span>Elapsed <time id="elapsed">00:00</time></span>
           <button id="cancel-button" class="button secondary" type="button">Cancel</button>
+          <button id="retry-button" class="button secondary" type="button" hidden>Retry unfinished ports</button>
         </div>
       </div>
       <div class="progress-row">
@@ -78,13 +86,19 @@
 
     <section id="results" class="results" aria-labelledby="results-title" hidden>
       <h2 id="results-title" class="sr-only">Scan results</h2>
+      <p id="result-notice" class="result-notice" role="status"></p>
       <div class="summary">
         <div><span>Target</span><strong id="summary-target">—</strong></div>
         <div><span>Open ports</span><strong id="summary-open">0</strong></div>
-        <div><span>Ports scanned</span><strong id="summary-scanned">0</strong></div>
+        <div><span>Completed / selected</span><strong id="summary-scanned">0</strong></div>
         <div><span>Duration</span><strong id="summary-duration">00:00</strong></div>
       </div>
 
+      <div class="result-filters">
+        <div class="field"><label for="result-search">Search results</label><input id="result-search" type="search" placeholder="Port, service, or product"></div>
+        <div class="field"><label for="confidence-filter">Identification</label><select id="confidence-filter"><option value="">All results</option><option value="banner">Banner observed</option><option value="port-guess">Port guesses</option></select></div>
+      </div>
+      <p id="filter-count" class="scope-note" aria-live="polite"></p>
       <div class="table-shell">
         <table>
           <thead><tr>
@@ -114,7 +128,7 @@
     </section>
   </main>
 
-  <footer>Use this tool only on systems you own or have explicit permission to scan.</footer>
-  <script src="{{ url_for('static', filename='js/app.js', v=2) }}" defer></script>
+  <footer>Use this tool only on systems you own or have explicit permission to scan. Results stay in this tab and are cleared on reload.</footer>
+  <script src="{{ url_for('static', filename='js/app.js', v='2.0.0') }}" defer></script>
 </body>
 </html>

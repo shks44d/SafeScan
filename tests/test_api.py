@@ -88,6 +88,27 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("application/json", response.json["error"])
 
+    def test_version_and_invalid_types(self):
+        self.assertEqual(self.client.get("/").headers["X-SafeScan-Version"], "2.0.0")
+        for target in (None, 123, [], {}):
+            self.assertEqual(
+                self.client.post("/api/resolve", json={"target": target}).status_code, 400
+            )
+        with patch("app.scan_ports") as scan:
+            for start in (True, 1.5, "1", None):
+                response = self.client.post(
+                    "/api/scan",
+                    json={
+                        "ip": "127.0.0.1",
+                        "host": "localhost",
+                        "start": start,
+                        "end": 10,
+                        "authorized": True,
+                    },
+                )
+                self.assertEqual(response.status_code, 400)
+            scan.assert_not_called()
+
     def test_resolve_returns_one_pinned_ip_and_all_answers(self):
         answers = [dns_answer("8.8.8.8"), dns_answer("1.1.1.1")]
         with patch("utils.netguard.socket.getaddrinfo", return_value=answers):

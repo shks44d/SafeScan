@@ -161,6 +161,37 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual(identity["service"], "postgresql")
         self.assertEqual(identity["confidence"], "port-guess")
 
+    def test_greetings_override_port_guesses(self):
+        cases = [
+            (2121, "220 welcome to FTP service", "ftp"),
+            (2525, "220 mail.example ESMTP Postfix", "smtp"),
+            (9001, "* OK Dovecot ready", "imap"),
+            (110, "+OK mailbox ready", "pop3"),
+            (6379, "-NOAUTH Authentication required.", "redis"),
+        ]
+        for port, banner, service in cases:
+            with self.subTest(banner=banner):
+                result = port_scanner.identify_service(port, banner)
+                self.assertEqual(result["service"], service)
+                self.assertEqual(result["confidence"], "banner")
+
+    def test_unknown_greeting_stays_a_guess(self):
+        result = port_scanner.identify_service(12345, "220 hello")
+        self.assertEqual(result["confidence"], "port-guess")
+
+    def test_http_headers_preserve_product_boundaries(self):
+        result = port_scanner.identify_service(
+            80, "HTTP/1.1 200 OK\r\nServer: customserver/2.5\r\nX-Other: nginx/9.0\r\n"
+        )
+        self.assertEqual(result["service"], "http")
+        self.assertEqual(result["product"], "customserver")
+        self.assertEqual(result["version"], "2.5")
+
+    def test_mariadb_compatibility_prefix_and_control_chars(self):
+        result = port_scanner.identify_service(3306, "", "5.5.5-10.11.6-MariaDB\x00")
+        self.assertEqual(result["product"], "MariaDB")
+        self.assertEqual(result["version"], "10.11.6-MariaDB")
+
 
 if __name__ == "__main__":
     unittest.main()
